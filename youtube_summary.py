@@ -1,21 +1,36 @@
+import os
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
-import openai
+import google.generativeai as genai
+from dotenv import load_dotenv
 
-# OpenAI API Key
-import os
+# Load environment variables from .env file
+load_dotenv()
 
-OPENAI_API_KEY = "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"  # Replace with your actual OpenAI API key
+# Configure Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    print("ERROR: No GEMINI_API_KEY found in .env file")
+    exit()
 
-# Configure OpenAI
-client = openai.OpenAI(api_key=OPENAI_API_KEY)
+genai.configure(api_key=GEMINI_API_KEY)
 
-# Initialize Flask (removed duplicate initialization)
+# Initialize Flask
 app = Flask(__name__)
 
 # Enable CORS for all routes properly
-CORS(app, supports_credentials=True, origins="*")
+CORS(app)
+
+# List available models
+@app.route('/list_models', methods=['GET'])
+def list_models_route():
+    try:
+        models = genai.list_models()
+        model_names = [model.name for model in models]
+        return jsonify({"models": model_names})
+    except Exception as e:
+        return jsonify({"error": f"Error listing models: {str(e)}"})
 
 # Extract YouTube Video ID
 def extract_video_id(video_url):
@@ -35,35 +50,27 @@ def get_video_transcript(video_id):
     except Exception as e:
         return f"Error fetching transcript: {e}"
 
-# Summarize Transcript with GPT-4
+# Summarize Transcript with Gemini
 def summarize_text(text):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "Summarize the following YouTube video transcript into key points."},
-                {"role": "user", "content": text}
-            ],
-            temperature=0.7,
-            max_tokens=500
+        # Use text-generation model name format
+        model = genai.GenerativeModel('models/gemini-1.5-pro')
+        response = model.generate_content(
+            "Summarize the following YouTube video transcript into key points: \n\n" + text
         )
-        return response.choices[0].message.content
+        return response.text
     except Exception as e:
         return f"Error generating summary: {e}"
 
-# Answer questions about the video
+# Answer questions with Gemini
 def answer_question(transcript, question):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[
-                {"role": "system", "content": "You are an AI assistant that answers questions about YouTube videos based on their transcript."},
-                {"role": "user", "content": f"Transcript: {transcript}\n\nQuestion: {question}"}
-            ],
-            temperature=0.7,
-            max_tokens=500
+        # Use text-generation model name format
+        model = genai.GenerativeModel('models/gemini-1.5-pro')
+        response = model.generate_content(
+            f"Based on this YouTube video transcript: \n\n{transcript}\n\nAnswer this question: {question}"
         )
-        return response.choices[0].message.content
+        return response.text
     except Exception as e:
         return f"Error answering question: {e}"
 
@@ -118,4 +125,5 @@ def ask_question():
 
 # Run Flask App
 if __name__ == '__main__':
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
