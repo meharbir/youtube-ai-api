@@ -1,6 +1,6 @@
 flask
 flask-cors
-openai
 youtube-transcript-api
-googletrans==4.0.0-rc1  # (For future translation feature)
-gtts  # (For text-to-speech, optional)
+python-dotenv
+google-generativeai
+gunicorn
