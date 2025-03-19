@@ -4,3 +4,5 @@ youtube-transcript-api
 python-dotenv
 google-generativeai
 gunicorn
+flask-limiter
+flask-caching
