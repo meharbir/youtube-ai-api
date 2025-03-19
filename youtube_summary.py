@@ -1,9 +1,13 @@
 import os
+import time
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
 import google.generativeai as genai
 from dotenv import load_dotenv
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from flask_caching import Cache
 
 # Load environment variables from .env file
 load_dotenv()
@@ -19,9 +23,19 @@ genai.configure(api_key=GEMINI_API_KEY)
 # Initialize Flask
 app = Flask(__name__)
 
-# Enable CORS for all routes properly
+# Setup CORS
 cors_origin = os.getenv('CORS_ALLOW_ORIGIN', '*')
 CORS(app, resources={r"/*": {"origins": cors_origin}}, supports_credentials=True)
+
+# Setup rate limiting
+limiter = Limiter(
+    get_remote_address,
+    app=app,
+    default_limits=["10 per minute", "200 per hour"]
+)
+
+# Setup caching
+cache = Cache(app, config={'CACHE_TYPE': 'simple'})
 
 # List available models
 @app.route('/list_models', methods=['GET'])
@@ -42,19 +56,28 @@ def extract_video_id(video_url):
     else:
         raise ValueError("Invalid YouTube URL format.")
 
-# Fetch Transcript
+# Fetch Transcript with retries and exponential backoff
 def get_video_transcript(video_id):
-    try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id)
-        transcript_text = "\n".join([entry['text'] for entry in transcript])
-        return transcript_text
-    except Exception as e:
-        return f"Error fetching transcript: {e}"
+    max_retries = 3
+    retry_delay = 2  # seconds
+    
+    for attempt in range(max_retries):
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(video_id)
+            transcript_text = "\n".join([entry['text'] for entry in transcript])
+            return transcript_text
+        except Exception as e:
+            if attempt < max_retries - 1:
+                print(f"Retry {attempt+1}/{max_retries} after error: {e}")
+                time.sleep(retry_delay)
+                retry_delay *= 2  # Exponential backoff
+            else:
+                return f"Error fetching transcript: {e}"
 
 # Summarize Transcript with Gemini
 def summarize_text(text):
     try:
-        # Use text-generation model name format
+        # Use the model that worked previously
         model = genai.GenerativeModel('models/gemini-1.5-pro')
         response = model.generate_content(
             "Summarize the following YouTube video transcript into key points: \n\n" + text
@@ -66,7 +89,7 @@ def summarize_text(text):
 # Answer questions with Gemini
 def answer_question(transcript, question):
     try:
-        # Use text-generation model name format
+        # Use the model that worked previously
         model = genai.GenerativeModel('models/gemini-1.5-pro')
         response = model.generate_content(
             f"Based on this YouTube video transcript: \n\n{transcript}\n\nAnswer this question: {question}"
@@ -77,6 +100,8 @@ def answer_question(transcript, question):
 
 # Flask API Route to Get Summary
 @app.route('/get_summary', methods=['GET'])
+@limiter.limit("3 per minute")
+@cache.cached(timeout=3600, query_string=True)  # Cache for 1 hour
 def get_summary():
     video_url = request.args.get('video_url')  # Get YouTube link from request
     
@@ -97,6 +122,7 @@ def get_summary():
 
 # New endpoint for asking questions
 @app.route('/ask_question', methods=['POST'])
+@limiter.limit("5 per minute")
 def ask_question():
     data = request.json
     
@@ -112,6 +138,12 @@ def ask_question():
     if not video_url:
         return jsonify({"error": "No video URL provided"})
     
+    # Create a cache key based on video_url and question
+    cache_key = f"{video_url}:{question}"
+    cached_result = cache.get(cache_key)
+    if cached_result:
+        return jsonify({"answer": cached_result})
+    
     try:
         video_id = extract_video_id(video_url)
         transcript = get_video_transcript(video_id)
@@ -120,9 +152,18 @@ def ask_question():
             return jsonify({"error": transcript})
         
         answer = answer_question(transcript, question)
+        
+        # Cache the result for 1 hour
+        cache.set(cache_key, answer, timeout=3600)
+        
         return jsonify({"answer": answer})
     except Exception as e:
         return jsonify({"error": f"Error processing question: {str(e)}"})
+
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy", "api": "YouTube AI Chatbot API"})
 
 # Run Flask App
 if __name__ == '__main__':
