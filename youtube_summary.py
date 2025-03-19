@@ -20,7 +20,8 @@ genai.configure(api_key=GEMINI_API_KEY)
 app = Flask(__name__)
 
 # Enable CORS for all routes properly
-CORS(app)
+cors_origin = os.getenv('CORS_ALLOW_ORIGIN', '*')
+CORS(app, resources={r"/*": {"origins": cors_origin}}, supports_credentials=True)
 
 # List available models
 @app.route('/list_models', methods=['GET'])
