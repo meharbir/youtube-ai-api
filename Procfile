@@ -1,1 +1,1 @@
-web: python youtube_summary.py
+web: gunicorn youtube_summary:app
