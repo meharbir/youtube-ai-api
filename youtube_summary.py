@@ -26,6 +26,15 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
 if not YOUTUBE_API_KEY:
     print("WARNING: No YOUTUBE_API_KEY found in .env file, will fall back to transcript API")
 
+# Initialize YouTube API client
+youtube_service = None
+if YOUTUBE_API_KEY:
+    try:
+        youtube_service = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        print("YouTube API service initialized successfully")
+    except Exception as e:
+        print(f"Error initializing YouTube API service: {str(e)}")
+
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Flask
@@ -64,74 +73,56 @@ def extract_video_id(video_url):
     else:
         raise ValueError("Invalid YouTube URL format.")
 
-# Get video transcript using the YouTube API
-def get_video_transcript_with_api(video_id):
+# Check if video exists and get its details using YouTube API
+def check_video_with_api(video_id):
+    if not youtube_service:
+        return None, "YouTube API service not initialized"
+    
     try:
-        print(f"Attempting to fetch transcript for video {video_id} using YouTube API")
+        print(f"Checking video details for {video_id} using YouTube API")
         
-        # Initialize the YouTube API client
-        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
-        
-        # Get the caption tracks for the video
-        captions_response = youtube.captions().list(
-            part='snippet',
-            videoId=video_id
+        # Get video details
+        video_response = youtube_service.videos().list(
+            part="snippet,contentDetails",
+            id=video_id
         ).execute()
         
-        # Check if captions exist
-        if not captions_response.get('items'):
-            print(f"No caption tracks found for video {video_id}")
-            return f"Error: No captions available for this video."
+        if not video_response.get('items'):
+            return None, "Video not found"
         
-        # Get the first caption track (usually the auto-generated one)
-        caption_id = captions_response['items'][0]['id']
+        video_details = video_response['items'][0]
+        title = video_details['snippet']['title']
+        channel = video_details['snippet']['channelTitle']
         
-        # Download the caption track
-        caption = youtube.captions().download(
-            id=caption_id,
-            tfmt='srt'
-        ).execute()
-        
-        # Process the SRT format to plain text
-        # This is simplified - you may need to parse actual SRT format
-        if isinstance(caption, bytes):
-            caption_text = caption.decode('utf-8')
-        else:
-            caption_text = caption
-            
-        # Remove timing information and convert to plain text
-        # Remove SRT formatting (timestamps and numbers)
-        clean_text = re.sub(r'\d+\s+\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+', '', caption_text)
-        # Remove any remaining numbers at the start of lines
-        clean_text = re.sub(r'^\d+\s*$', '', clean_text, flags=re.MULTILINE)
-        
-        print(f"Successfully retrieved transcript for {video_id} using YouTube API")
-        return clean_text
+        print(f"Found video: '{title}' by {channel}")
+        return video_details, "Video found"
         
     except HttpError as e:
-        error_details = str(e)
-        print(f"YouTube API error: {error_details}")
+        error_message = str(e)
+        print(f"YouTube API error when checking video: {error_message}")
         
-        if "quotaExceeded" in error_details:
-            print("YouTube API quota exceeded")
-            return f"Error: YouTube API quota exceeded. Please try again tomorrow."
+        if "quotaExceeded" in error_message:
+            return None, "YouTube API quota exceeded"
         else:
-            return f"Error fetching transcript via YouTube API: {error_details}"
+            return None, f"YouTube API error: {error_message}"
             
     except Exception as e:
-        print(f"Unexpected error with YouTube API: {str(e)}")
-        return f"Error: {str(e)}"
+        print(f"Unexpected error checking video with YouTube API: {str(e)}")
+        return None, f"Error: {str(e)}"
 
 # Fetch Transcript with both methods and fallback
 def get_video_transcript(video_id):
-    # First try with the official API if we have a key
-    if YOUTUBE_API_KEY:
-        transcript = get_video_transcript_with_api(video_id)
-        if not transcript.startswith("Error"):
-            return transcript
-        print(f"YouTube API method failed, falling back to transcript API")
+    # First check if the video exists using the API
+    if youtube_service:
+        video_details, message = check_video_with_api(video_id)
+        if not video_details:
+            print(f"Could not verify video with API: {message}")
+            if "quota" in message:
+                print("Quota exceeded, continuing with transcript API")
+            elif "not found" in message:
+                return f"Error: Video ID {video_id} could not be found."
     
-    # Fall back to the transcript API with retries
+    # Try to get transcript with transcript API
     max_retries = 3
     retry_delay = 2  # seconds
     
