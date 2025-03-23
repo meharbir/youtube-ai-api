@@ -56,23 +56,41 @@ def extract_video_id(video_url):
     else:
         raise ValueError("Invalid YouTube URL format.")
 
-# Fetch Transcript with retries and exponential backoff
+# Fetch Transcript with detailed error logging
 def get_video_transcript(video_id):
     max_retries = 3
     retry_delay = 2  # seconds
     
     for attempt in range(max_retries):
         try:
+            print(f"Attempting to fetch transcript for video {video_id}, attempt {attempt+1}/{max_retries}")
             transcript = YouTubeTranscriptApi.get_transcript(video_id)
             transcript_text = "\n".join([entry['text'] for entry in transcript])
+            print(f"Successfully retrieved transcript for {video_id}, length: {len(transcript_text)} characters")
             return transcript_text
         except Exception as e:
+            error_message = str(e)
+            print(f"Error fetching transcript: {error_message}")
+            
+            # Detailed error analysis
+            if "Too Many Requests" in error_message:
+                print(f"YouTube rate limit detected: {error_message}")
+                return f"Error fetching transcript (Rate limit): {error_message}"
+            elif "Transcript unavailable" in error_message:
+                print(f"No transcript available: {error_message}")
+                return f"Error: This video does not have a transcript available. {error_message}"
+            elif "not found" in error_message.lower():
+                print(f"Video not found: {error_message}")
+                return f"Error: Video ID {video_id} could not be found. {error_message}"
+            
+            # If not the final attempt, try again after delay
             if attempt < max_retries - 1:
-                print(f"Retry {attempt+1}/{max_retries} after error: {e}")
+                print(f"Retrying after {retry_delay} seconds...")
                 time.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             else:
-                return f"Error fetching transcript: {e}"
+                print(f"All {max_retries} attempts failed. Last error: {error_message}")
+                return f"Error fetching transcript after {max_retries} attempts: {error_message}"
 
 # Summarize Transcript with Gemini
 def summarize_text(text):
@@ -109,15 +127,25 @@ def get_summary():
         return jsonify({"error": "No video URL provided"})
     
     try:
+        print(f"Processing request for video URL: {video_url}")
         video_id = extract_video_id(video_url)  # Extract video ID
+        print(f"Extracted video ID: {video_id}")
+        
         transcript = get_video_transcript(video_id)  # Fetch transcript
 
         if "Error" in transcript:
-            return jsonify({"error": transcript})
+            print(f"Transcript error detected: {transcript}")
+            if "Rate limit" in transcript:
+                return jsonify({"error": f"YouTube rate limit reached. Please try again later. Details: {transcript}"})
+            else:
+                return jsonify({"error": transcript})
 
+        print(f"Successfully retrieved transcript, generating summary...")
         summary = summarize_text(transcript)  # Generate summary
+        print(f"Summary generated, length: {len(summary)} characters")
         return jsonify({"summary": summary})
     except Exception as e:
+        print(f"Unexpected error in get_summary: {str(e)}")
         return jsonify({"error": f"Error processing request: {str(e)}"})
 
 # New endpoint for asking questions
@@ -145,19 +173,29 @@ def ask_question():
         return jsonify({"answer": cached_result})
     
     try:
+        print(f"Processing question for video URL: {video_url}")
         video_id = extract_video_id(video_url)
+        print(f"Extracted video ID: {video_id}")
+        
         transcript = get_video_transcript(video_id)
         
         if "Error" in transcript:
-            return jsonify({"error": transcript})
+            print(f"Transcript error detected: {transcript}")
+            if "Rate limit" in transcript:
+                return jsonify({"error": f"YouTube rate limit reached. Please try again later. Details: {transcript}"})
+            else:
+                return jsonify({"error": transcript})
         
+        print(f"Successfully retrieved transcript, generating answer...")
         answer = answer_question(transcript, question)
+        print(f"Answer generated, length: {len(answer)} characters")
         
         # Cache the result for 1 hour
         cache.set(cache_key, answer, timeout=3600)
         
         return jsonify({"answer": answer})
     except Exception as e:
+        print(f"Unexpected error in ask_question: {str(e)}")
         return jsonify({"error": f"Error processing question: {str(e)}"})
 
 # Health check endpoint
