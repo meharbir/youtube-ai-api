@@ -1,6 +1,7 @@
 import os
 import time
 import re
+import hashlib
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -264,6 +265,68 @@ def ask_question():
     except Exception as e:
         print(f"Unexpected error in ask_question: {str(e)}")
         return jsonify({"error": f"Error processing question: {str(e)}"})
+
+# NEW ENDPOINT: Generate summary from provided transcript
+@app.route('/generate_summary', methods=['POST'])
+@limiter.limit("5 per minute")
+def generate_summary_from_transcript():
+    data = request.json
+    
+    if not data:
+        return jsonify({"error": "No data provided"})
+    
+    transcript = data.get('transcript')
+    
+    if not transcript:
+        return jsonify({"error": "No transcript provided"})
+    
+    try:
+        print(f"Generating summary for provided transcript, length: {len(transcript)} characters")
+        summary = summarize_text(transcript)  # Generate summary
+        print(f"Summary generated, length: {len(summary)} characters")
+        return jsonify({"summary": summary})
+    except Exception as e:
+        print(f"Unexpected error in generate_summary: {str(e)}")
+        return jsonify({"error": f"Error generating summary: {str(e)}"})
+
+# NEW ENDPOINT: Answer question with provided transcript
+@app.route('/answer_question_with_transcript', methods=['POST'])
+@limiter.limit("5 per minute")
+def answer_question_with_transcript():
+    data = request.json
+    
+    if not data:
+        return jsonify({"error": "No data provided"})
+    
+    question = data.get('question')
+    transcript = data.get('transcript')
+    
+    if not question:
+        return jsonify({"error": "No question provided"})
+    
+    if not transcript:
+        return jsonify({"error": "No transcript provided"})
+    
+    # Create a cache key based on transcript hash and question
+    transcript_hash = hashlib.md5(transcript.encode()).hexdigest()
+    cache_key = f"{transcript_hash}:{question}"
+    cached_result = cache.get(cache_key)
+    
+    if cached_result:
+        return jsonify({"answer": cached_result})
+    
+    try:
+        print(f"Answering question based on provided transcript, length: {len(transcript)} characters")
+        answer = answer_question(transcript, question)
+        print(f"Answer generated, length: {len(answer)} characters")
+        
+        # Cache the result for 1 hour
+        cache.set(cache_key, answer, timeout=3600)
+        
+        return jsonify({"answer": answer})
+    except Exception as e:
+        print(f"Unexpected error in answer_question_with_transcript: {str(e)}")
+        return jsonify({"error": f"Error answering question: {str(e)}"})
 
 # Health check endpoint
 @app.route('/health', methods=['GET'])
