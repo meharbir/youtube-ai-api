@@ -1,5 +1,6 @@
 import os
 import time
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -8,6 +9,8 @@ from dotenv import load_dotenv
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from flask_caching import Cache
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 # Load environment variables from .env file
 load_dotenv()
@@ -17,6 +20,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GEMINI_API_KEY:
     print("ERROR: No GEMINI_API_KEY found in .env file")
     exit()
+
+# Configure YouTube API
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+if not YOUTUBE_API_KEY:
+    print("WARNING: No YOUTUBE_API_KEY found in .env file, will fall back to transcript API")
 
 genai.configure(api_key=GEMINI_API_KEY)
 
@@ -56,14 +64,80 @@ def extract_video_id(video_url):
     else:
         raise ValueError("Invalid YouTube URL format.")
 
-# Fetch Transcript with detailed error logging
+# Get video transcript using the YouTube API
+def get_video_transcript_with_api(video_id):
+    try:
+        print(f"Attempting to fetch transcript for video {video_id} using YouTube API")
+        
+        # Initialize the YouTube API client
+        youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+        
+        # Get the caption tracks for the video
+        captions_response = youtube.captions().list(
+            part='snippet',
+            videoId=video_id
+        ).execute()
+        
+        # Check if captions exist
+        if not captions_response.get('items'):
+            print(f"No caption tracks found for video {video_id}")
+            return f"Error: No captions available for this video."
+        
+        # Get the first caption track (usually the auto-generated one)
+        caption_id = captions_response['items'][0]['id']
+        
+        # Download the caption track
+        caption = youtube.captions().download(
+            id=caption_id,
+            tfmt='srt'
+        ).execute()
+        
+        # Process the SRT format to plain text
+        # This is simplified - you may need to parse actual SRT format
+        if isinstance(caption, bytes):
+            caption_text = caption.decode('utf-8')
+        else:
+            caption_text = caption
+            
+        # Remove timing information and convert to plain text
+        # Remove SRT formatting (timestamps and numbers)
+        clean_text = re.sub(r'\d+\s+\d{2}:\d{2}:\d{2},\d{3} --> \d{2}:\d{2}:\d{2},\d{3}\s+', '', caption_text)
+        # Remove any remaining numbers at the start of lines
+        clean_text = re.sub(r'^\d+\s*$', '', clean_text, flags=re.MULTILINE)
+        
+        print(f"Successfully retrieved transcript for {video_id} using YouTube API")
+        return clean_text
+        
+    except HttpError as e:
+        error_details = str(e)
+        print(f"YouTube API error: {error_details}")
+        
+        if "quotaExceeded" in error_details:
+            print("YouTube API quota exceeded")
+            return f"Error: YouTube API quota exceeded. Please try again tomorrow."
+        else:
+            return f"Error fetching transcript via YouTube API: {error_details}"
+            
+    except Exception as e:
+        print(f"Unexpected error with YouTube API: {str(e)}")
+        return f"Error: {str(e)}"
+
+# Fetch Transcript with both methods and fallback
 def get_video_transcript(video_id):
+    # First try with the official API if we have a key
+    if YOUTUBE_API_KEY:
+        transcript = get_video_transcript_with_api(video_id)
+        if not transcript.startswith("Error"):
+            return transcript
+        print(f"YouTube API method failed, falling back to transcript API")
+    
+    # Fall back to the transcript API with retries
     max_retries = 3
     retry_delay = 2  # seconds
     
     for attempt in range(max_retries):
         try:
-            print(f"Attempting to fetch transcript for video {video_id}, attempt {attempt+1}/{max_retries}")
+            print(f"Attempting to fetch transcript using transcript API for video {video_id}, attempt {attempt+1}/{max_retries}")
             transcript = YouTubeTranscriptApi.get_transcript(video_id)
             transcript_text = "\n".join([entry['text'] for entry in transcript])
             print(f"Successfully retrieved transcript for {video_id}, length: {len(transcript_text)} characters")
@@ -75,7 +149,9 @@ def get_video_transcript(video_id):
             # Detailed error analysis
             if "Too Many Requests" in error_message:
                 print(f"YouTube rate limit detected: {error_message}")
-                return f"Error fetching transcript (Rate limit): {error_message}"
+                # Only return error on last attempt
+                if attempt == max_retries - 1:
+                    return f"Error fetching transcript (Rate limit): {error_message}"
             elif "Transcript unavailable" in error_message:
                 print(f"No transcript available: {error_message}")
                 return f"Error: This video does not have a transcript available. {error_message}"
