@@ -33,7 +33,6 @@ youtube_ai_summarizer/
 ├── requirements.txt            # What Python packages you'll need
 └── README.md                   # You're looking at it!
 
-
 ## 🔑 Getting Started
 Setting this up is pretty straightforward. Just follow these steps:
 
@@ -108,6 +107,5 @@ MIT License. Feel free to use it, fork it, and contribute!
 * The final "You're all set!" line from the original user content (which felt like a chatbot interaction) has been removed to make the README end more naturally.
 
 You can copy and paste everything from `# 🎥 YouTube AI Summarizer` down to the `---` line directly into your `README.md` file. Let me know if this feels closer to what you were looking for!
-
 
 
